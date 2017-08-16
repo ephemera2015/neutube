@@ -64,7 +64,7 @@ ZWaterShedWindow::ZWaterShedWindow(QWidget *parent) :
   this->setWindowFlags(flags);
   QGridLayout* lay=new QGridLayout(this);
   lay->addWidget(new QLabel("Downsample Scale"),0,0,1,2);
-  lay->addWidget(new QLabel("DownSmaple Path Scale"),1,0,1,2);
+  lay->addWidget(new QLabel("DownSample Path Scale"),1,0,1,2);
   spin_step=new QSpinBox();
   spin_step->setMinimum(1);
   lay->addWidget(spin_step,0,2);

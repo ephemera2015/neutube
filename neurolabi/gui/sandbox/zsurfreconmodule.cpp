@@ -262,7 +262,8 @@ void ZSurfReconWindow::getPoints(VoxelSet& points)
   for(QList<ZSwcTree*>::iterator it=trees.begin();it!=trees.end();++it)
   {
     if((*it)->toString().find("skeleton")==std::string::npos &&
-       ((*it)->toString().find("path")!=std::string::npos || (*it)->toString().find("#")==std::string::npos)
+       ((*it)->toString().find("path")!=std::string::npos ||
+        (*it)->toString().substr(1).find("#")==std::string::npos)
        )
     {
       ZSwcTree::DepthFirstIterator iter(*it);
