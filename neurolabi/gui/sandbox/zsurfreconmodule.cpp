@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <QAction>
 #include <QMessageBox>
+#include <set>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPushButton>
@@ -15,7 +16,7 @@
 #include "mainwindow.h"
 #include "zswcforest.h"
 #include "imgproc/zsurfrecon.h"
-
+#include "imgproc/utils.h"
 
 ZSurfReconWindow::ZSurfReconWindow(QWidget *parent):QWidget(parent)
 {
@@ -30,6 +31,9 @@ ZSurfReconWindow::ZSurfReconWindow(QWidget *parent):QWidget(parent)
   lay->addWidget(ok);
   this->setLayout(lay);
   this->move(300,200);
+  Qt::WindowFlags flags = this->windowFlags();
+  flags |= Qt::WindowStaysOnTopHint;
+  this->setWindowFlags(flags);
   connect(ok,SIGNAL(clicked()),this,SLOT(onOk()));
 }
 
@@ -137,7 +141,9 @@ void ZSurfReconWindow::onOk()
 
   VoxelSet points_in;
   getPoints(points_in);
-
+  if(points_in.size()<1)
+    return;
+  std::cout<<"number of surface reconstruction input points:"<<points_in.size()<<std::endl;
   if(use_service->isChecked())
   {
     QString url=service_url->text();
@@ -164,27 +170,52 @@ void ZSurfReconWindow::onOk()
   else//compute at local
   {
     VoxelSet points_out;
-    ZSurfRecon::SurfRecon(points_in,points_out);
-    ZSurfRecon::LabelStack(points_out,src);
-    ZSurfRecon::GaussianBlur(points_out,src,5);
-    QList<ZSwcTree*> trees=doc->getSwcList();
-    std::for_each(trees.begin(),trees.end(),[&](ZSwcTree* tree)
+    std::map<int,VoxelSet> m;
+    for(auto x:points_in)
     {
-      if(tree->toString().find("skeleton")!=std::string::npos)
-      {
-        ZSurfRecon::PruneSkeleton(points_out,tree);
-      }
-    });
-    for(QList<ZSwcTree*>::iterator it=trees.begin();it!=trees.end();++it)
-    {
+      m[x.z].push_back(x);
+    }
 
-      if((*it)->toString().find("skeleton")==std::string::npos)
+   // ZSurfRecon::SurfRecon(points_in,points_out);
+    for(int s=1;s<4;s++)
+    {
+      for(int i=0;i<s;++i)
       {
-        doc->removeObject(*it);
+          VoxelSet ti,to;
+          for(auto x:m)
+          {
+            ti.insert(ti.end(),x.second.begin()+x.second.size()/s*i,x.second.begin()+x.second.size()/s*(i+1));
+          }
+          if(ti.size())
+            ZSurfRecon::SurfRecon(ti,to);
+          points_out.insert(points_out.end(),to.begin(),to.end());
       }
     }
+    std::set<ZIntPoint>pset;
+    uint8_t* p=src->array8();
+    int width=src->width(),height=src->height(),area=width*height;
+    size_t _off=src->getOffset().m_x+src->getOffset().m_y*width+src->getOffset().m_z*area;
+    size_t max_off=src->getVoxelNumber();
+    for(uint i=0;i<points_out.size();++i)
+    {
+      const VoxelType& v=points_out[i];
+      for(int x=int(v.x);x<=int(v.x)+1;++x)
+        for(int y=int(v.y);y<=int(v.y)+1;++y)
+          for(int z=int(v.z);z<=int(v.z)+1;++z)
+          {
+            size_t offset=x+y*width+z*area-_off;
+            if(offset<max_off)
+            {
+               pset.insert(ZIntPoint(x,y,z));
+            }
+          }
+
+    }
+    std::vector<ZIntPoint> points(pset.begin(),pset.end());
+    points2Swc(points,doc,"surf",false);
+    //connectSwc(doc,"surf",10);
+    rmSwcTree(doc,"path");
   }
-  this->hide();
 }
 
 
@@ -226,13 +257,13 @@ void ZSurfReconWindow::getPostData(const VoxelSet& points,QByteArray& data)
 
 void ZSurfReconWindow::getPoints(VoxelSet& points)
 {
-  int ofx=src->getOffset().m_x,ofy=src->getOffset().m_y,ofz=src->getOffset().m_z;
-
   QList<ZSwcTree*> trees=doc->getSwcList();
 
   for(QList<ZSwcTree*>::iterator it=trees.begin();it!=trees.end();++it)
   {
-    if((*it)->toString().find("skeleton")==std::string::npos)
+    if((*it)->toString().find("skeleton")==std::string::npos &&
+       ((*it)->toString().find("path")!=std::string::npos || (*it)->toString().find("#")==std::string::npos)
+       )
     {
       ZSwcTree::DepthFirstIterator iter(*it);
       while(iter.hasNext())
@@ -240,9 +271,9 @@ void ZSurfReconWindow::getPoints(VoxelSet& points)
         Swc_Tree_Node* tn=iter.next();
         if(!SwcTreeNode::isVirtual(tn))
         {
-          points.push_back(VoxelType(SwcTreeNode::x(tn)-ofx,
-                                     SwcTreeNode::y(tn)-ofy,
-                                     SwcTreeNode::z(tn)-ofz));
+          points.push_back(VoxelType(SwcTreeNode::x(tn),
+                                               SwcTreeNode::y(tn),
+                                               SwcTreeNode::z(tn)));
         }
       }
     }

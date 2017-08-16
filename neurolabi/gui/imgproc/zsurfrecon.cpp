@@ -44,10 +44,12 @@ int gaussianBlur2(ZStack* src,int x,int y,int z,int r,double sigma)
   double sigma_3=sigma_2*sigma;
 
   int width=src->width(),height=src->height(),depth=src->depth(),area=width*height;
-  size_t _off=src->getOffset().m_x+src->getOffset().m_y*width+src->getOffset().m_z*area;
-  int x_min=std::max(0,x-r),x_max=std::min(width,x+r);
-  int y_min=std::max(0,y-r),y_max=std::min(height,y+r);
-  int z_min=std::max(0,z-r),z_max=std::min(depth,z+r);
+  int _ofx=src->getOffset().m_x,_ofy=src->getOffset().m_y,_ofz=src->getOffset().m_z;
+
+  size_t _off=_ofx+_ofy*width+_ofz*area;
+  int x_min=std::max(_ofx,x-r),x_max=std::min(_ofx+width,x+r);
+  int y_min=std::max(_ofy,y-r),y_max=std::min(_ofy+height,y+r);
+  int z_min=std::max(_ofz,z-r),z_max=std::min(_ofz+depth,z+r);
 
   int size=(x_max-x_min)*(y_max-y_min)*(z_max-z_min);
   double* weights=new double[size];

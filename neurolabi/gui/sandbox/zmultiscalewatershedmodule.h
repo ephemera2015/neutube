@@ -8,6 +8,7 @@ class ZStack;
 
 class QPushButton;
 class QSpinBox;
+class QCheckBox;
 class ZStack;
 
 
@@ -19,10 +20,18 @@ public:
 private slots:
   void onOk();
   void onCancel();
+  void onCreatePath();
+  void onMerge();
+  void onMakeSkeleton();
 private:
   QPushButton*  ok;
   QPushButton*  cancel;
+  QPushButton*  merge;
+  QPushButton*  path;
   QSpinBox*     spin_step;
+  QSpinBox*     path_step;
+  QPushButton*  make_skeleton;
+
 };
 
 class ZMultiscaleWaterShedModule:public ZSandboxModule

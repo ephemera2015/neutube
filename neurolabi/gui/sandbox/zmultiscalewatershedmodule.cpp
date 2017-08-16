@@ -5,8 +5,11 @@
 #include <vector>
 #include <QPushButton>
 #include <QGridLayout>
+#include <QCheckBox>
 #include <cstdlib>
 #include <fstream>
+#include <set>
+#include <map>
 #include "zmultiscalewatershedmodule.h"
 #include "imgproc/zstackwatershed.h"
 #include "zstackdoc.h"
@@ -15,12 +18,15 @@
 #include "neutubeconfig.h"
 #include "zobject3dscan.hpp"
 #include "imgproc/zstackmultiscalewatershed.h"
+#include "imgproc/zgmm.h"
+#include "imgproc/zshortestpath.h"
+#include "imgproc/utils.h"
 #include "zobject3dfactory.h"
 #include "zobject3darray.h"
 #include "zstackdocdatabuffer.h"
 #include "zstackframe.h"
 #include "zcolorscheme.h"
-
+#include "zstackskeletonizer.h"
 
 ZMultiscaleWaterShedModule::ZMultiscaleWaterShedModule(QObject *parent) :
   ZSandboxModule(parent)
@@ -37,7 +43,7 @@ ZMultiscaleWaterShedModule::~ZMultiscaleWaterShedModule()
 
 void ZMultiscaleWaterShedModule::init()
 {  
-  m_action = new QAction("Multiscale WaterShed", this);
+  m_action = new QAction("Segmentation", this);
   connect(m_action, SIGNAL(triggered()), this, SLOT(execute()));
   window=new ZWaterShedWindow();
 }
@@ -52,174 +58,360 @@ void ZMultiscaleWaterShedModule::execute()
 ZWaterShedWindow::ZWaterShedWindow(QWidget *parent) :
   QWidget(parent)
 {
-  this->setWindowTitle("Multiscale Watershed");
+  this->setWindowTitle("Segmentation");
   Qt::WindowFlags flags = this->windowFlags();
   flags |= Qt::WindowStaysOnTopHint;
   this->setWindowFlags(flags);
   QGridLayout* lay=new QGridLayout(this);
   lay->addWidget(new QLabel("Downsample Scale"),0,0,1,2);
+  lay->addWidget(new QLabel("DownSmaple Path Scale"),1,0,1,2);
   spin_step=new QSpinBox();
   spin_step->setMinimum(1);
   lay->addWidget(spin_step,0,2);
-  ok=new QPushButton("OK");
+  path_step=new QSpinBox();
+  path_step->setMinimum(1);
+  lay->addWidget(path_step,1,2);
+  make_skeleton=new QPushButton("Make Skeleton");
+  lay->addWidget(make_skeleton,2,0);
+  path=new QPushButton("Create Path");
+  lay->addWidget(path,2,1);
+  merge=new QPushButton("Merge Selected");
+  lay->addWidget(merge,2,2);
+  ok=new QPushButton("Segment");
   cancel=new QPushButton("Cancel");
-  lay->addWidget(cancel,1,2);
-  lay->addWidget(ok,1,3);
+  lay->addWidget(cancel,3,2);
+  lay->addWidget(ok,3,0,1,2);
   this->setLayout(lay);
   this->move(300,200);
   connect(ok,SIGNAL(clicked()),this,SLOT(onOk()));
   connect(cancel,SIGNAL(clicked()),this,SLOT(onCancel()));
+  connect(path,SIGNAL(clicked()),this,SLOT(onCreatePath()));
+  connect(merge,SIGNAL(clicked()),this,SLOT(onMerge()));
+  connect(make_skeleton,SIGNAL(clicked()),this,SLOT(onMakeSkeleton()));
 }
 
 
-void createTestStack()
+void erode(ZStack* stack)
 {
-
-  int w=400,h=400,d=400;
-  ZStack* em=new ZStack(GREY,w,h,d,1);
-  uint8_t* p=em->array8();
-  int sx=100,sy=100,sz=100,r=100;
-  int cl=210,cr=360,ct=300,cd=60,ci=400,co=0;
+  uint8_t* p=stack->array8();
+  ZStack* rv=stack->clone();
+  uint8_t* q=rv->array8();
+  int w=stack->width(),h=stack->height(),d=stack->depth();
+  size_t s=w*h;
   for(int k=0;k<d;++k)
   {
-    for(int j=0;j<h;++j)
+    for(int j=1;j<h-1;++j)
     {
-      for(int i=0;i<w;++i)
+      for(int i=1;i<w-1;++i)
       {
-        if(std::sqrt((k-sz)*(k-sz)+(j-sy)*(j-sy)+(i-sx)*(i-sx))<r-1)
+        if(!q[i+j*w+k*s])
         {
-          p[k*w*h+j*w+i]=100+rand()%30;
-        }
-        else if(std::sqrt((k-sz)*(k-sz)+(j-sy)*(j-sy)+(i-sx)*(i-sx))<r+1)
-        {
-          p[k*w*h+j*w+i]=0;
-        }
-        else if(k>=co&&k<=ci&&j>=cd&&j<=ct&&i>=cl&&i<=cr)
-        {
-          p[k*w*h+j*w+i]=200+rand()%30;
-        }
-        else if(k>=co-1&&k<=ci+1&&j>=cd-1&&j<=ct+1&&i>=cl-1&&i<=cr+1)
-        {
-          p[k*w*h+j*w+i]=0;
-        }
-        else if(std::sqrt((k-100)*(k-100)+(j-300)*(j-300)+(i-60)*(i-60))<=101)
-        {
-          p[k*w*h+j*w+i]=150+rand()%30;
-        }
-        else
-        {
-          p[k*w*h+j*w+i]=0;
+          p[i+1+j*w+k*s]=p[i+-1+j*w+k*s]=
+          p[i+(j-1)*w+k*s]=p[i+(j+1)*w+k*s]=0;
         }
       }
     }
   }
-  ZStackFrame *frame=ZSandbox::GetMainWindow()->createStackFrame(em);
-  ZSandbox::GetMainWindow()->addStackFrame(frame);
-  ZSandbox::GetMainWindow()->presentStackFrame(frame);
+  delete rv;
 }
 
-void ZWaterShedWindow::onOk()
+void dilate(ZStack* stack)
 {
-#if 0
-  const int size=16;
-  //createTestStack();
-  uint8_t data[]={1, 1, 8, 8, 7, 8, 7, 7, 8, 7, 8, 8 ,7 ,8 ,7 ,8,
-                  7, 1, 1, 7, 7, 8, 6, 8, 7, 8, 8, 8, 8 ,7 ,7 ,7,
-                  8, 8, 1, 7, 1, 7, 7, 7, 7, 8, 8, 6, 7, 8, 7, 8,
-                  9, 7, 8, 6, 1, 1, 6, 8, 8, 7, 9, 7, 7, 7, 7, 7,
-                  8, 8, 7, 7, 8, 1, 1, 7, 8, 8, 7, 8, 7, 8, 8, 8,
-                  8, 8, 8, 7, 7, 8, 1, 1, 7, 1, 8, 7, 7, 7, 7, 7,
-                  6, 7, 9, 9, 8, 7, 7, 7, 7, 1, 7, 8, 8, 6, 6, 8,
-                  7, 8, 7, 8, 6, 6, 8, 8, 8, 1, 8, 9, 9, 7, 7, 7,
-                  8, 9, 8, 7, 7, 7, 1, 1, 1, 1, 7, 8, 8, 8, 7, 8,
-                  8, 8, 9, 6, 8, 1, 1, 8, 7, 8, 8, 7, 7, 9, 6, 7,
-                  9, 7, 8, 7 ,7, 8, 1, 1, 1, 1, 8, 8 ,7, 9, 8, 7,
-                  7, 8, 7, 8, 8, 8, 6, 8, 7, 8, 7, 8, 8, 8, 9, 6,
-                  7, 8, 9, 6, 9, 7, 7, 7, 7, 1, 1, 8, 7, 7 ,7 ,8,
-                  7, 7, 9, 7, 7, 8, 8, 6, 6, 7, 1, 8, 1, 1, 1, 7,
-                  8, 7, 8, 8, 8, 8, 8, 7, 8, 8, 1, 7, 1, 8, 1, 1,
-                  8, 9, 7, 9, 9, 7, 9, 7, 7, 8, 7, 8, 8, 9, 7, 1 };
-  ZStack* src=new ZStack(GREY,16,16,1,1);
-  for(int i=0;i<16*16;++i)
+  uint8_t* p=stack->array8();
+  ZStack* rv=stack->clone();
+  uint8_t* q=rv->array8();
+  int w=stack->width(),h=stack->height(),d=stack->depth();
+  size_t s=w*h;
+  for(int k=0;k<d;++k)
   {
-    src->array8()[i]=data[i];
+    for(int j=1;j<h-1;++j)
+    {
+      for(int i=1;i<w-1;++i)
+      {
+        if(q[i+j*w+k*s])
+        {
+          p[i+1+j*w+k*s]=p[i+-1+j*w+k*s]=
+          p[i+(j-1)*w+k*s]=p[i+(j+1)*w+k*s]=q[i+j*w+k*s];
+        }
+      }
+    }
   }
-  ZStack* seed=new ZStack(GREY,16,16,1,1);
-  seed->array8()[15+0*16]=1;
-  seed->array8()[0+15*16]=2;
-  seed->array8()[5+1*16]=1;
-  seed->array8()[3+5*16]=2;
-  seed->array8()[11+3*16]=1;
-  seed->array8()[6+7*16]=2;
-  seed->array8()[11+11*16]=1;
-  seed->array8()[11+15*16]=2;
-  seed->array8()[13+7*16]=1;
-  seed->array8()[6+12*16]=2;
-  ZStack* result=ZStackWatershed().run(src,seed);
-  for(int j=0;j<16;++j)
+  delete rv;
+}
+
+
+ZStack* autoBinary(const ZStack* stack,const ZStack* mask=NULL,double threshold=0.99)
+{
+  ZStack* ps=ZGMM().probabilityMap(stack);
+  ZStack* rv=new ZStack(GREY,stack->width(),stack->height(),stack->depth(),1);
+  rv->setOffset(stack->getOffset());
+
+  for(size_t i=0;i<stack->getVoxelNumber();++i)
   {
-     for(int i=0;i<16;++i)
-     {
-        std::cout<<(int)result->array8()[i+j*size]<<" ";
-     }
-     std::cout<<std::endl;
+    if(ps->array64()[i]>=threshold)
+    {
+      if(mask)
+      {
+        if(mask->array8()[i])
+        {
+          rv->array8()[i]=255;
+        }
+      }
+      else
+      {
+        rv->array8()[i]=255;
+      }
+    }
   }
-#endif
-#if 1
+
+  for(int i=0;i<2;++i)
+  {
+    dilate(rv);
+  }
+  for(int i=0;i<4;++i)
+  {
+    erode(rv);
+  }
+
+  delete ps;
+  return rv;
+}
+
+
+ZSwcTree* makeSkeleton(ZStack* stack)
+{
+  Stack *stackData = stack->c_stack();
+  ZSwcTree *wholeTree = NULL;
+
+  ZStackSkeletonizer skeletonizer;
+
+  skeletonizer.setDownsampleInterval(0,0,0);
+  skeletonizer.setRebase(true);
+  skeletonizer.setMinObjSize(5);
+  skeletonizer.setDistanceThreshold(0);
+  skeletonizer.setLengthThreshold(5);
+  skeletonizer.setKeepingSingleObject(false);
+
+  wholeTree = skeletonizer.makeSkeleton(stackData);
+  wholeTree->translate(stack->getOffset());
+
+
+  if (wholeTree != NULL)
+  {
+     wholeTree->addComment("skeleton");
+ //    frame->executeAddObjectCommand(wholeTree);
+ //    ZWindowFactory::Open3DWindow(frame, Z3DWindow::INIT_EXCLUDE_VOLUME);
+//   frame->open3DWindow(Z3DWindow::INIT_EXCLUDE_VOLUME);
+  }
+  else
+  {
+    std::cout<<"skeleton failed"<<std::endl;
+  }
+  return wholeTree;
+}
+
+
+ZStack* getSelectedArea(ZStackDoc* doc)
+{
+  ZStack* rv=doc->getStack()->clone();
+  QList<ZObject3dScan*> areas=doc->getObject3dScanList();
+  if(areas.size()==0)
+  {
+    return rv;
+  }
+  for(auto x:areas)
+  {
+    if(!x->isSelected())
+      x->drawStack(rv,0);
+  }
+  return rv;
+}
+
+
+void  ZWaterShedWindow::onMakeSkeleton()
+{
+  ZStackDoc* doc=ZSandbox::GetCurrentDoc();
+  if(!doc)return;
+  ZStack* src=doc->getStack();
+  if(!src)return;
+
+  ZStack* mask=getSelectedArea(doc);
+  ZStack* binary=autoBinary(src,mask,0.99);
+  if(ZSwcTree* skeleton=makeSkeleton(binary))
+  {
+    skeleton->setZOrder(2);
+    doc->executeAddObjectCommand(skeleton);
+  }
+  delete binary;
+  delete mask;
+}
+
+
+struct Distance
+{
+  double operator ()(ZShortestPath<Distance>* z,const ZIntPoint& q)
+  {
+    double x=-z->at(q.getX()-1,q.getY()-1,q.getZ())+z->at(q.getX()+1,q.getY()-1,q.getZ());
+    x+=-2*z->at(q.getX()-1,q.getY(),q.getZ())+2*z->at(q.getX()+1,q.getY(),q.getZ());
+    x+=-z->at(q.getX()-1,q.getY()+1,q.getZ())+z->at(q.getX()+1,q.getY()+1,q.getZ());
+    double y=z->at(q.getX()-1,q.getY()-1,q.getZ())-z->at(q.getX()-1,q.getY()+1,q.getZ());
+    y+=2*z->at(q.getX(),q.getY()-1,q.getZ())-2*z->at(q.getX(),q.getY()+1,q.getZ());
+    y+=z->at(q.getX()+1,q.getY()-1,q.getZ())-z->at(q.getX()+1,q.getY()+1,q.getZ());
+    return std::exp(int(50-std::sqrt(x*x+y*y)*0.1));
+  }
+};
+
+struct Distance3
+{
+  double operator ()(ZShortestPath<Distance3>* z,const ZIntPoint& q)
+  {
+    double x=z->at(q.getX()-1,q.getY()-1,q.getZ())-z->at(q.getX()+1,q.getY()+1,q.getZ());
+    double y=z->at(q.getX()+1,q.getY()-1,q.getZ())-z->at(q.getX()-1,q.getY()+1,q.getZ());
+    return 2<<(int(26-std::sqrt(x*x+y*y)*0.1+z->at(q.getX(),q.getY(),q.getZ())*0.02));
+  }
+};
+
+
+void ZWaterShedWindow::onMerge()
+{
   ZStackDoc *doc =ZSandbox::GetCurrentDoc();
   if(!doc)return;
   ZStack  *src=doc->getStack();
   if(!src)return;
+
+  QList<ZObject3dScan*> selected=doc->getSelectedObjectList<ZObject3dScan>(ZStackObject::TYPE_OBJECT3D_SCAN);
+  if(selected.size()<2)
+    return;
+  ZObject3dScan* first=selected[0];
+  for(int i=1;i<selected.size();++i)
+  {
+    for(auto x:selected[i]->getStripeArray())
+    {
+      first->addStripe(x);
+    }
+    doc->removeObject(selected[i]);
+  }
+
+}
+
+void ZWaterShedWindow::onCreatePath()
+{
+  std::vector<ZIntPoint> points;
+  swc2Points(ZSandbox::GetCurrentDoc(),points,"");
+  rmSwcTree(ZSandbox::GetCurrentDoc(),"");
+  std::vector<ZIntPoint> out;
+  ZShortestPath<Distance>().shortestPathMultiSlice(ZSandbox::GetCurrentDoc()->getStack(),points,out,path_step->value());
+  points2Swc(out,ZSandbox::GetCurrentDoc(),"path");
+}
+
+
+void getBoundarySoftSeeds(ZStackDoc* doc,std::vector<ZIntPoint>& points)
+{
+  swc2Points(doc,points,"surf");
+  swc2Points(doc,points,"path");
+}
+
+
+void getAreaHardSeeds(ZStackDoc* doc,QList<ZSwcTree*>& seeds)
+{
+
+  for(auto x:doc->getSwcList())
+  {
+    if(x->toString().substr(1).find("#")==std::string::npos)
+    {
+      seeds.push_back(x);
+    }
+    else if(x->toString().substr(1).find("skeleton")!=std::string::npos)
+    {
+      seeds.push_back(x);
+    }
+  }
+}
+
+
+void updateSegmentationResult(ZStackDoc* doc,const ZStack* result)
+{
+  QList<ZObject3dScan*> selected=doc->getSelectedObjectList<ZObject3dScan>(ZStackObject::TYPE_OBJECT3D_SCAN);
+  for(auto x=selected.begin();x!=selected.end();++x)
+  {
+    doc->removeObject(*x,true);
+  }
+
+  std::vector<ZObject3dScan*> objArray =ZObject3dFactory::MakeObject3dScanPointerArray(*result, 1, false);
+ /* if(create_new_frame)
+  {
+    ZStackFrame* frame=ZSandbox::GetMainWindow()->createStackFrame(doc->getStack()->clone());
+    ZSandbox::GetMainWindow()->addStackFrame(frame);
+    ZSandbox::GetMainWindow()->presentStackFrame(frame);
+    //skeleton->setSelectable(true);
+    //skeleton->setVisible(true);
+    //skeleton->setHitProtocal(ZStackObject::HIT_WIDGET_POS);
+    ZSandbox::GetCurrentFrame()->document()->executeAddObjectCommand(skeleton);
+    //->getDataBuffer()->addUpdate(skeleton,ZStackDocObjectUpdate::ACTION_ADD_UNIQUE);
+   // ZSandbox::GetCurrentFrame()->document()->getDataBuffer()->deliver();
+    ndoc=ZSandbox::GetCurrentDoc();
+  }*/
+  ZColorScheme colorScheme;
+  colorScheme.setColorScheme(ZColorScheme::UNIQUE_COLOR);
+  static int colorIndex = 0;
+  for (std::vector<ZObject3dScan*>::iterator iter = objArray.begin();
+       iter != objArray.end(); ++iter)
+  {
+    ZObject3dScan *obj = *iter;
+    if (obj != NULL && !obj->isEmpty())
+    {
+      QColor color = colorScheme.getColor(colorIndex++);
+      color.setAlpha(164);
+      obj->setColor(color);
+      doc->getDataBuffer()->addUpdate(obj,ZStackDocObjectUpdate::ACTION_ADD_UNIQUE);
+      doc->getDataBuffer()->deliver();
+    }
+  }
+}
+
+
+void ZWaterShedWindow::onOk()
+{
+
+  //get and check current doc and stack
+  ZStackDoc *doc =ZSandbox::GetCurrentDoc();
+  if(!doc)return;
+  ZStack  *src=doc->getStack();
+  if(!src)return;
+
   int scale=spin_step->value();
 
+
+  ZStack* selected=getSelectedArea(doc);
+
+
+  std::vector<ZIntPoint>points;
+  getBoundarySoftSeeds(doc,points);
+  for(auto x:points)//lowwer down boundary area intensity
+  {
+    selected->array8()[x.m_x+x.m_y*src->width()+x.m_z*src->width()*src->height()]
+    =std::max(0,selected->array8()[x.m_x+x.m_y*src->width()+x.m_z*src->width()*src->height()]-70);
+  }
+
+  QList<ZSwcTree*> seeds;
+  getAreaHardSeeds(doc,seeds);
+
   ZStackMultiScaleWatershed watershed;
-  QList<ZSwcTree*> trees=doc->getSwcList();
   clock_t start=clock();
-  ZStack* result=watershed.run(src,trees,scale);
+  ZStack* result=watershed.run(selected,seeds,scale);
   clock_t end=clock();
   std::cout<<"multiscale watershed total run time:"<<double(end-start)/CLOCKS_PER_SEC<<std::endl;
-
   if(result)
   {
-    ZStackFrame *frame=ZSandbox::GetMainWindow()->createStackFrame(src->clone());
-//    ZSandbox::GetMainWindow()->addStackFrame(frame);
-//    ZSandbox::GetMainWindow()->presentStackFrame(frame);
-
-    std::vector<ZObject3dScan*> objArray =
-        ZObject3dFactory::MakeObject3dScanPointerArray(*result, 1, false);
-
-//    ZStack* edge_obj=new ZStack(result->kind(),result->width(),result->height(),
-//                                result->depth(),result->channelNumber());
-//    frame=ZSandbox::GetMainWindow()->createStackFrame(edge_obj);
-
-    ZColorScheme colorScheme;
-    colorScheme.setColorScheme(ZColorScheme::UNIQUE_COLOR);
-    int colorIndex = 0;
-
-    for (std::vector<ZObject3dScan*>::iterator iter = objArray.begin();
-         iter != objArray.end(); ++iter)
-    {
-      ZObject3dScan *obj = *iter;
-
-      if (obj != NULL && !obj->isEmpty())
-      {
-        QColor color = colorScheme.getColor(colorIndex++);
-        color.setAlpha(164);
-        obj->setColor(color);
-        frame->document()->getDataBuffer()->addUpdate(
-              obj,ZStackDocObjectUpdate::ACTION_ADD_UNIQUE);
-        frame->document()->getDataBuffer()->deliver();
-      }
-    }
-    ZSandbox::GetMainWindow()->addStackFrame(frame);
-    ZSandbox::GetMainWindow()->presentStackFrame(frame);
-
-    frame=ZSandbox::GetMainWindow()->createStackFrame(result);
-    ZSandbox::GetMainWindow()->addStackFrame(frame);
-    ZSandbox::GetMainWindow()->presentStackFrame(frame);
-    //delete result;
+    updateSegmentationResult(doc,result);
+    delete result;
   }
-#endif
+  delete selected;
+  //clear all seeds
+  rmSwcTree(doc,"");
+  rmSwcTree(doc,"surf");
+  rmSwcTree(doc,"path");
+  rmSwcTree(doc,"skeleton");
 }
 
 

@@ -1,3 +1,4 @@
+#include<vector>
 #include<QMessageBox>
 #include<QAction>
 #include<QGridLayout>
@@ -6,6 +7,7 @@
 #include<QString>
 #include"zsandbox.h"
 #include"imgproc/zstackprocessor.h"
+#include"imgproc/zgmm.h"
 #include"zimageinfomodule.h"
 
 ZImageShowWindow::ZImageShowWindow(QWidget *parent) : QWidget(parent)
@@ -70,6 +72,18 @@ void ZImageShowWindow::showHistogram()
   x[0]=x[1]=average/size_of_bin;
   y[0]=0,y[1]=maxc;
   customPlot->graph(0)->setData(x,y);
+ /* ZStack* stack=ZSandbox::GetCurrentDoc()->getStack();
+  stack->downsampleMean(2,2,1);
+  std::vector<uint8_t> data(stack->array8(),stack->array8()+stack->getVoxelNumber());
+  ZGMM gmm;
+  std::vector<double> params=gmm.run(data);
+  QVector<double>xx(256),yy(256);
+  for(int i=0;i<256;++i)
+  {
+    xx[i]=i;
+    yy[i]=sum*(params[0]*ZGMM::g(i,params[2],params[1])+params[3]*ZGMM::g(i,params[5],params[4]));
+  }
+  customPlot->graph(1)->setData(xx,yy);*/
   bars->setData(index,values);
   QVector<double> coor;
   QVector<QString>labels;
@@ -79,7 +93,10 @@ void ZImageShowWindow::showHistogram()
     coor.append(i);
     labels.append(QString::number(i*size_of_bin));
   }
+
+
   customPlot->graph(0)->setName(QString("  average intensity")+":"+QString::number(average,'f',2));
+ // customPlot->graph(1)->setName(QString("  GMM model fitting"));
   customPlot->xAxis->setTickVector(coor);
   customPlot->xAxis->setTickVectorLabels(labels);
   customPlot->rescaleAxes();
@@ -232,6 +249,7 @@ void ZImageShowWindow::initPlot()
   bars->setBrush(QColor(10, 140, 70, 160));
   customPlot->addPlottable(bars);
   customPlot->addGraph();
+  //customPlot->addGraph();
   QPen pen;
   pen.setColor(QColor(255,170,100));
   pen.setWidth(2);
